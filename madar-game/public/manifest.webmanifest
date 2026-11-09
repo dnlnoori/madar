@@ -1,0 +1,19 @@
+{
+  "name": "مدار | MADAR",
+  "short_name": "مدار",
+  "lang": "fa",
+  "dir": "rtl",
+  "start_url": "/",
+  "display": "standalone",
+  "background_color": "#090d1c",
+  "theme_color": "#090d1c",
+  "description": "یک بازی معمایی آرام و هوشمند",
+  "icons": [
+    {
+      "src": "/icon.svg",
+      "sizes": "any",
+      "type": "image/svg+xml",
+      "purpose": "any maskable"
+    }
+  ]
+}
