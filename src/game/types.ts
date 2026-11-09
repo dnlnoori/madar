@@ -24,7 +24,6 @@ export interface LevelResult {
   stars: number;
   time: number;
   hints: number;
-  mistakes: number;
   completedAt: string;
 }
 
@@ -38,7 +37,6 @@ export interface PlayerProgress {
   totalTime: number;
   gamesPlayed: number;
   totalHints: number;
-  totalMistakes: number;
   activeDays: string[];
 }
 
@@ -52,6 +50,5 @@ export const EMPTY_PROGRESS: PlayerProgress = {
   totalTime: 0,
   gamesPlayed: 0,
   totalHints: 0,
-  totalMistakes: 0,
   activeDays: [],
 };

@@ -2,20 +2,20 @@ import { useCallback, useEffect, useMemo, useRef, useState, type CSSProperties, 
 import { AnimatePresence, motion } from 'framer-motion';
 import {
   ArrowLeft, ArrowRight, ArrowUpRight, Award, BarChart3, Check, ChevronDown,
-  ChevronLeft, ChevronRight, CircleHelp, Clock3, Crown, Flame, Grid3X3, Heart,
-  Lightbulb, Lock, Moon, MoreHorizontal, Pause, Play, RotateCcw, Settings,
+  ChevronLeft, ChevronRight, CircleHelp, Clock3, Crown, Flame, Grid3X3,
+  Lightbulb, Lock, Moon, Pause, Play, RotateCcw, Settings,
   ShieldCheck, Sparkles, Star, Sun, Trophy, Undo2, Redo2, Volume2, VolumeX,
   WandSparkles, X, Zap, Download, Upload, FileJson, Plus, Home as HomeIcon,
   CalendarDays, Target, BookOpen, Orbit, Info, RefreshCw
 } from 'lucide-react';
 import levelsData from './data/levels.json';
 import type { Board } from './game/engine';
-import { cloneBoard, countSolutions, formatPersianNumber, getCellErrorKeys, getForcedMove, isBoardSolved } from './game/engine';
+import { cloneBoard, countSolutions, formatPersianNumber, getForcedMove, isBoardSolved } from './game/engine';
 import type { CellValue, Difficulty, Level, LevelResult, PlayerProgress } from './game/types';
 import { EMPTY_PROGRESS } from './game/types';
 
 type Screen = 'home' | 'map' | 'game' | 'stats' | 'admin' | 'settings';
-interface SavedSession { levelId: number; board: Board; elapsed: number; hints: number; mistakes: number; }
+interface SavedSession { levelId: number; board: Board; elapsed: number; hints: number; }
 
 const baseLevels = levelsData as unknown as Level[];
 const chapterMeta = [
@@ -58,11 +58,28 @@ function formatTime(seconds: number) {
   return `${formatPersianNumber(m).padStart(2, '۰')}:${formatPersianNumber(s).padStart(2, '۰')}`;
 }
 
-function starsFor(time: number, hints: number, mistakes: number, size: number) {
-  const target = size === 4 ? 150 : size === 6 ? 360 : 720;
-  if (hints === 0 && mistakes === 0 && time <= target) return 3;
-  if (hints <= 1 && mistakes <= 2) return 2;
+// Stars are based only on a measurable, player-controlled action: using hints.
+// Completion always grants one star; zero hints grants three, one hint grants two.
+function starsFor(hints: number) {
+  if (hints === 0) return 3;
+  if (hints === 1) return 2;
   return 1;
+}
+
+function readProgress(): PlayerProgress {
+  const stored = readStorage<PlayerProgress>('madar-progress-v1', EMPTY_PROGRESS) as PlayerProgress & { totalMistakes?: number };
+  const { totalMistakes: _legacyTotalMistakes, ...cleanProgress } = stored;
+  // Migrate older saves to the transparent hint-only star rules and drop obsolete mistake counters.
+  const completed = Object.fromEntries(
+    Object.entries(cleanProgress.completed ?? {}).map(([id, result]) => {
+      const { mistakes: _legacyMistakes, ...cleanResult } = result as LevelResult & { mistakes?: number };
+      return [id, {
+        ...cleanResult,
+        stars: Math.max(result.stars ?? 0, starsFor(result.hints ?? 0)),
+      }];
+    }),
+  );
+  return { ...cleanProgress, completed };
 }
 
 function createEmptyBoard(size: number): Board {
@@ -78,7 +95,7 @@ function SymbolIcon({ value, size = 24 }: { value: number; size?: number }) {
 }
 
 function App() {
-  const [progress, setProgress] = useState<PlayerProgress>(() => readStorage('madar-progress-v1', EMPTY_PROGRESS));
+  const [progress, setProgress] = useState<PlayerProgress>(() => readProgress());
   const [customLevels, setCustomLevels] = useState<Level[]>(() => readStorage('madar-custom-levels-v1', [] as Level[]));
   const [savedSession, setSavedSession] = useState<SavedSession | null>(() => readStorage<SavedSession | null>('madar-session-v1', null));
   const [screen, setScreen] = useState<Screen>('home');
@@ -86,10 +103,8 @@ function App() {
   const [board, setBoard] = useState<Board>(() => savedSession?.board ? cloneBoard(savedSession.board) : cloneBoard(baseLevels[0].initialBoard));
   const [elapsed, setElapsed] = useState(savedSession?.elapsed ?? 0);
   const [hintCount, setHintCount] = useState(savedSession?.hints ?? 0);
-  const [mistakes, setMistakes] = useState(savedSession?.mistakes ?? 0);
   const [undoStack, setUndoStack] = useState<Board[]>([]);
   const [redoStack, setRedoStack] = useState<Board[]>([]);
-  const [autoCheck, setAutoCheck] = useState(true);
   const [hintMove, setHintMove] = useState<ReturnType<typeof getForcedMove>>(null);
   const [hintStage, setHintStage] = useState(0);
   const [toast, setToast] = useState('');
@@ -110,12 +125,6 @@ function App() {
   const completedCount = Object.keys(progress.completed).length;
   const totalStars = Object.values(progress.completed).reduce((sum, item) => sum + item.stars, 0);
   const activeStreak = progress.lastPlayedDate === todayKey() || progress.lastPlayedDate === previousDay(todayKey()) ? progress.currentStreak : 0;
-  const errorKeys = useMemo(() => {
-    if (!autoCheck) return new Set<string>();
-    const errors = getCellErrorKeys(board, currentLevel.constraints);
-    board.forEach((row, r) => row.forEach((value, c) => { if (value !== -1 && value !== currentLevel.solution[r][c]) errors.add(`${r}-${c}`); }));
-    return errors;
-  }, [board, currentLevel, autoCheck]);
   const streakDays = useMemo(() => Array.from({ length: 7 }, (_, i) => {
     const date = new Date(); date.setDate(date.getDate() - (6 - i));
     const key = `${date.getFullYear()}-${String(date.getMonth() + 1).padStart(2, '0')}-${String(date.getDate()).padStart(2, '0')}`;
@@ -128,12 +137,12 @@ function App() {
   useEffect(() => { localStorage.setItem('madar-custom-levels-v1', JSON.stringify(customLevels)); }, [customLevels]);
   useEffect(() => {
     if (screen === 'game' && !showWin) {
-      const session = { levelId: activeLevelId, board, elapsed, hints: hintCount, mistakes };
+      const session = { levelId: activeLevelId, board, elapsed, hints: hintCount };
       setSavedSession(session); localStorage.setItem('madar-session-v1', JSON.stringify(session));
     } else if (showWin) {
       setSavedSession(null); localStorage.removeItem('madar-session-v1');
     }
-  }, [screen, activeLevelId, board, elapsed, hintCount, mistakes, showWin]);
+  }, [screen, activeLevelId, board, elapsed, hintCount, showWin]);
   useEffect(() => { localStorage.setItem('madar-sound', String(soundOn)); }, [soundOn]);
   useEffect(() => { localStorage.setItem('madar-music', String(musicOn)); }, [musicOn]);
   useEffect(() => { localStorage.setItem('madar-haptics', String(hapticsOn)); }, [hapticsOn]);
@@ -161,14 +170,14 @@ function App() {
   useEffect(() => {
     if (screen === 'game' && isBoardSolved(board, currentLevel) && !winProcessed.current) {
       winProcessed.current = true;
-      const stars = starsFor(elapsed, hintCount, mistakes, currentLevel.gridSize);
+      const stars = starsFor(hintCount);
       const today = todayKey();
       setProgress((prev) => {
         const old = prev.completed[currentLevel.id];
         const improved = !old || stars > old.stars || (stars === old.stars && elapsed < old.time);
         const last = prev.lastPlayedDate;
         const streak = last === today ? prev.currentStreak : last === previousDay(today) ? prev.currentStreak + 1 : 1;
-        const result: LevelResult = { stars: Math.max(stars, old?.stars ?? 0), time: old && old.time < elapsed ? old.time : elapsed, hints: hintCount, mistakes, completedAt: today };
+        const result: LevelResult = { stars: Math.max(stars, old?.stars ?? 0), time: old && old.time < elapsed ? old.time : elapsed, hints: hintCount, completedAt: today };
         return {
           ...prev,
           completed: { ...prev.completed, [currentLevel.id]: result },
@@ -180,7 +189,6 @@ function App() {
           totalTime: prev.totalTime + elapsed,
           gamesPlayed: prev.gamesPlayed + 1,
           totalHints: prev.totalHints + hintCount,
-          totalMistakes: prev.totalMistakes + mistakes,
           activeDays: [...new Set([...(prev.activeDays ?? []), today])].slice(-90),
         };
       });
@@ -188,17 +196,16 @@ function App() {
       if (hapticsOn && 'vibrate' in navigator) navigator.vibrate([18, 45, 18]);
       if (soundOn) playTone(740, 0.16);
     }
-  }, [board, currentLevel, elapsed, hintCount, mistakes, screen, soundOn, hapticsOn]);
+  }, [board, currentLevel, elapsed, hintCount, screen, soundOn, hapticsOn]);
 
   const startLevel = useCallback((id: number) => {
     const level = [...baseLevels, ...customLevels].find((item) => item.id === id);
     if (!level) return;
     setActiveLevelId(id);
     setBoard(cloneBoard(level.initialBoard));
-    setSavedSession({ levelId: id, board: cloneBoard(level.initialBoard), elapsed: 0, hints: 0, mistakes: 0 });
+    setSavedSession({ levelId: id, board: cloneBoard(level.initialBoard), elapsed: 0, hints: 0 });
     setElapsed(0);
     setHintCount(0);
-    setMistakes(0);
     setUndoStack([]);
     setRedoStack([]);
     setHintMove(null);
@@ -210,7 +217,7 @@ function App() {
 
   const resumeSession = () => {
     if (savedSession && [...baseLevels, ...customLevels].some((level) => level.id === savedSession.levelId)) {
-      setActiveLevelId(savedSession.levelId); setBoard(cloneBoard(savedSession.board)); setElapsed(savedSession.elapsed); setHintCount(savedSession.hints); setMistakes(savedSession.mistakes);
+      setActiveLevelId(savedSession.levelId); setBoard(cloneBoard(savedSession.board)); setElapsed(savedSession.elapsed); setHintCount(savedSession.hints);
       setUndoStack([]); setRedoStack([]); setShowWin(false); winProcessed.current = false; setScreen('game');
     } else startLevel(Math.min(progress.unlockedLevel, allLevels.length));
   };
@@ -228,11 +235,10 @@ function App() {
     setUndoStack((prev) => [...prev.slice(-80), cloneBoard(board)]);
     setRedoStack([]);
     setBoard(next);
+    if (hintMove) { setHintMove(null); setHintStage(0); }
     if (hapticsOn && 'vibrate' in navigator) navigator.vibrate(8);
-    if (nextValue !== -1 && nextValue !== currentLevel.solution[r][c] && autoCheck) {
-      setMistakes((v) => v + 1);
-      if (soundOn) playTone(180, 0.08);
-    } else if (soundOn && nextValue !== -1) playTone(nextValue === 0 ? 540 : 430, 0.07);
+    // No per-cell correctness feedback: choosing a temporary symbol is part of solving.
+    if (soundOn && nextValue !== -1) playTone(nextValue === 0 ? 540 : 430, 0.07);
   };
 
   const undo = () => {
@@ -241,6 +247,7 @@ function App() {
     setRedoStack((prev) => [...prev, cloneBoard(board)]);
     setUndoStack((prev) => prev.slice(0, -1));
     setBoard(cloneBoard(previous));
+    setHintMove(null); setHintStage(0);
   };
   const redo = () => {
     if (!redoStack.length) return;
@@ -248,16 +255,17 @@ function App() {
     setUndoStack((prev) => [...prev, cloneBoard(board)]);
     setRedoStack((prev) => prev.slice(0, -1));
     setBoard(cloneBoard(next));
+    setHintMove(null); setHintStage(0);
   };
   const resetLevel = () => {
     setBoard(cloneBoard(currentLevel.initialBoard));
-    setUndoStack([]); setRedoStack([]); setHintCount(0); setMistakes(0); setElapsed(0); setShowWin(false); winProcessed.current = false;
+    setUndoStack([]); setRedoStack([]); setHintCount(0); setElapsed(0); setShowWin(false); winProcessed.current = false;
     setHintMove(null); setHintStage(0);
   };
 
   const openHint = () => {
     const move = getForcedMove(board, currentLevel);
-    if (!move) { showToast('اول یک خانه را درست کن تا راهنمایی تازه‌ای پیدا کنیم.'); return; }
+    if (!move) { setHintMove(null); setHintStage(0); showToast('از وضعیت فعلی جدول سرنخ قطعی پیدا نشد؛ یکی از انتخاب‌هایت را دوباره بررسی کن.'); return; }
     setHintMove(move);
     setHintStage(0);
   };
@@ -268,7 +276,6 @@ function App() {
     setUndoStack((prev) => [...prev, cloneBoard(board)]);
     setRedoStack([]);
     setBoard(next);
-    setHintCount((v) => v + 1);
     setHintMove(null); setHintStage(0);
     showToast('یک خانه با کمک راهنما کامل شد.');
   };
@@ -329,7 +336,7 @@ function App() {
     setProgress(EMPTY_PROGRESS); setSavedSession(null); localStorage.removeItem('madar-session-v1'); setScreen('home'); showToast('پیشرفت بازی پاک شد.');
   };
 
-  const navTo = (target: Screen) => { setScreen(target); setShowWin(false); };
+  const navTo = (target: Screen) => { setScreen(target); setShowWin(false); setHintMove(null); setHintStage(0); };
   const continueLevel = savedSession?.levelId ?? Math.min(progress.unlockedLevel, allLevels.length);
   const levelResult = progress.completed[currentLevel.id];
 
@@ -426,8 +433,8 @@ function App() {
                     {board.map((row, r) => row.map((value, c) => {
                       const fixed = currentLevel.initialBoard[r][c] !== -1;
                       const key = `${r}-${c}`;
-                      const isHint = hintMove && hintStage >= 2 && hintMove.row === r && hintMove.col === c;
-                      return <button key={key} className={`puzzle-cell ${fixed ? 'fixed' : ''} ${errorKeys.has(key) ? 'error' : ''} ${isHint ? 'hinted' : ''} ${value === 0 ? 'has-sun' : value === 1 ? 'has-moon' : ''}`} onClick={() => updateCell(r, c)} disabled={fixed || showWin} aria-label={`ردیف ${r + 1} ستون ${c + 1}`}>
+                      const isHint = hintMove && hintStage >= 1 && hintMove.row === r && hintMove.col === c;
+                      return <button key={key} className={`puzzle-cell ${fixed ? 'fixed' : ''} ${isHint ? 'hinted' : ''} ${value === 0 ? 'has-sun' : value === 1 ? 'has-moon' : ''}`} onClick={() => updateCell(r, c)} disabled={fixed || showWin} aria-label={`ردیف ${r + 1} ستون ${c + 1}`}>
                         {value !== -1 && <motion.span key={`${key}-${value}`} initial={{ scale: 0.55, opacity: 0 }} animate={{ scale: 1, opacity: 1 }} transition={{ type: 'spring', stiffness: 420, damping: 22 }}><SymbolIcon value={value} size={currentLevel.gridSize === 8 ? 19 : currentLevel.gridSize === 6 ? 23 : 28} /></motion.span>}
                         {fixed && <span className="fixed-dot" />}
                       </button>;
@@ -442,10 +449,26 @@ function App() {
                   })}</div>
                 </div>
                 <div className="board-footnote"><Info size={14} /> هر ردیف و ستون باید تعداد مساوی خورشید و ماه داشته باشد.</div>
+                <AnimatePresence>
+                  {hintMove && screen === 'game' && <motion.div className="hint-inline-panel" role="region" aria-live="polite" aria-label="راهنمای هوشمند" initial={{ opacity: 0, y: 10 }} animate={{ opacity: 1, y: 0 }} exit={{ opacity: 0, y: 8 }}>
+                    <div className="hint-inline-head">
+                      <div className="hint-orb"><Lightbulb size={22} /></div>
+                      <div className="hint-inline-copy"><div className="modal-eyebrow">راهنمای هوشمند</div><h2>{hintStage === 0 ? 'یک سرنخ کوچک؟' : hintStage === 1 ? 'به منطق جدول دقت کن' : 'خانهٔ پیشنهادی پیدا شد'}</h2></div>
+                      <button className="hint-inline-close" onClick={() => { setHintMove(null); setHintStage(0); }} aria-label="بستن راهنمایی"><X size={17} /></button>
+                    </div>
+                    <p>{hintStage === 0 ? 'می‌توانیم قدم‌به‌قدم کمکت کنیم، بدون اینکه جواب کل معما را لو بدهیم.' : hintStage === 1 ? 'خانهٔ مشخص‌شده در جدول را ببین. با توجه به تعادل ردیف و ستون و نشانه‌های اطراف، می‌توانی انتخاب درست را پیدا کنی.' : `ردیف ${formatPersianNumber(hintMove.row + 1)}، ستون ${formatPersianNumber(hintMove.col + 1)}: ${hintMove.reason}`}</p>
+                    {hintStage >= 1 && <div className="hint-location"><span>ردیف {formatPersianNumber(hintMove.row + 1)}</span><span>ستون {formatPersianNumber(hintMove.col + 1)}</span>{hintStage === 2 && <span className="hint-answer"><SymbolIcon value={hintMove.value} size={16} /> {hintMove.value === 0 ? 'خورشید' : 'ماه'}</span>}</div>}
+                    <div className="hint-inline-actions">
+                      <button className="text-link" onClick={() => { setHintMove(null); setHintStage(0); }}>بستن</button>
+                      {hintStage === 0 ? <button className="primary-button" onClick={() => { setHintCount((v) => v + 1); setHintStage(1); }}>دیدن سرنخ <ArrowLeft size={16} /></button> : hintStage === 1 ? <button className="primary-button" onClick={() => setHintStage(2)}>نمایش نماد <ArrowLeft size={16} /></button> : <button className="primary-button" onClick={applyHint}>قرار دادن نماد <Check size={16} /></button>}
+                    </div>
+                  </motion.div>}
+                </AnimatePresence>
+                {filledCount === totalCells && !isBoardSolved(board, currentLevel) && <div className="final-check-row"><button className="outline-button small" onClick={() => showToast('جدول کامل شده، اما پاسخ هنوز با همه قوانین معما سازگار نیست. بدون نمایش خانه‌های خطادار، یک بار دیگر بررسی کن.')}><Check size={15} /> بررسی پاسخ نهایی</button></div>}
               </section>
               <aside className="game-sidebar">
-                <div className="side-card side-progress"><div className="side-card-title"><span>وضعیت مرحله</span><MoreHorizontal size={17} /></div><div className="side-progress-main"><div className="donut-progress" style={{ '--progress': `${filledCount / totalCells * 100}%` } as CSSProperties}><b>{Math.round(filledCount / totalCells * 100)}٪</b></div><div><b>{formatPersianNumber(filledCount)} خانه</b><small>از {formatPersianNumber(totalCells)} خانه</small></div></div><div className="side-stats"><span><small>اشتباه‌ها</small><b>{formatPersianNumber(mistakes)}</b></span><span><small>راهنمایی</small><b>{formatPersianNumber(hintCount)}</b></span></div></div>
-                <div className="side-card tools-card"><div className="side-card-title"><span>ابزارهای تو</span><WandSparkles size={17} /></div><div className="tool-grid"><button onClick={undo} disabled={!undoStack.length}><Undo2 size={18} /><span>بازگشت</span></button><button onClick={redo} disabled={!redoStack.length}><Redo2 size={18} /><span>دوباره</span></button><button onClick={openHint} className="hint-tool"><Lightbulb size={18} /><span>راهنمایی</span></button><button onClick={resetLevel}><RotateCcw size={18} /><span>شروع مجدد</span></button></div><label className="toggle-row"><span>بررسی خودکار خطا</span><button className={`toggle ${autoCheck ? 'on' : ''}`} onClick={() => setAutoCheck((v) => !v)} aria-label="بررسی خودکار خطا"><i /></button></label></div>
+                <div className="side-card side-progress"><div className="side-card-title"><span>وضعیت مرحله</span><Sparkles size={17} /></div><div className="side-progress-main"><div className="donut-progress" style={{ '--progress': `${filledCount / totalCells * 100}%` } as CSSProperties}><b>{Math.round(filledCount / totalCells * 100)}٪</b></div><div><b>{formatPersianNumber(filledCount)} خانه</b><small>از {formatPersianNumber(totalCells)} خانه</small></div></div><div className="side-stats"><span><small>خانه‌های خالی</small><b>{formatPersianNumber(totalCells - filledCount)}</b></span><span><small>راهنمایی</small><b>{formatPersianNumber(hintCount)}</b></span></div></div>
+                <div className="side-card tools-card"><div className="side-card-title"><span>ابزارهای تو</span><WandSparkles size={17} /></div><div className="tool-grid"><button onClick={undo} disabled={!undoStack.length}><Undo2 size={18} /><span>بازگشت</span></button><button onClick={redo} disabled={!redoStack.length}><Redo2 size={18} /><span>دوباره</span></button><button onClick={openHint} className="hint-tool"><Lightbulb size={18} /><span>راهنمایی</span></button><button onClick={resetLevel}><RotateCcw size={18} /><span>شروع مجدد</span></button></div></div>
                 <div className="side-quote"><span>✦</span><p>«گاهی پاسخ درست، از دلِ صبر و نگاه دوباره پیدا می‌شود.»</p></div>
               </aside>
             </div>
@@ -456,13 +479,13 @@ function App() {
             <div className="stats-grid"><div className="stat-card"><span className="stat-icon gold"><Trophy /></span><small>مرحله‌های کامل‌شده</small><b>{formatPersianNumber(completedCount)}</b><span>از {formatPersianNumber(allLevels.length)} مرحله</span></div><div className="stat-card"><span className="stat-icon violet"><Star /></span><small>مجموع ستاره‌ها</small><b>{formatPersianNumber(totalStars)}</b><span>از {formatPersianNumber(allLevels.length * 3)} ستاره</span></div><div className="stat-card"><span className="stat-icon blue"><Clock3 /></span><small>زمان بازی</small><b>{formatPersianNumber(Math.floor(progress.totalTime / 60))}</b><span>دقیقه</span></div><div className="stat-card"><span className="stat-icon rose"><Flame /></span><small>بهترین استریک</small><b>{formatPersianNumber(progress.longestStreak)}</b><span>روز متوالی</span></div></div>
             <section className="section-card streak-calendar-card"><div className="section-card-title"><h2>تقویم استریک</h2><span>۷ روز اخیر</span></div><div className="streak-calendar">{streakDays.map((day) => <div key={day.key} className={day.active ? 'active' : ''}><span>{day.label}</span><i>{day.active ? <Flame size={16} fill="currentColor" /> : <span>·</span>}</i></div>)}</div></section>
             <div className="stats-panels"><section className="section-card stats-progress-card"><div className="section-card-title"><h2>پیشرفت در فصل‌ها</h2><span>۱۰۰ مرحله</span></div>{chapterMeta.map((chapter) => { const count = Object.keys(progress.completed).filter((id) => Number(id) >= chapter.start && Number(id) <= chapter.end).length; const total = chapter.end - chapter.start + 1; return <div className="chapter-stat" key={chapter.start}><div><b>{chapter.name}</b><span>{formatPersianNumber(count)} / {formatPersianNumber(total)}</span></div><div className="progress-track"><i style={{ width: `${count / total * 100}%` }} /></div></div>; })}</section>
-              <section className="section-card record-card"><div className="section-card-title"><h2>رکوردهای تو</h2><Award size={19} /></div><div className="record-row"><span><Target size={16} /> مجموع تجربه</span><b>{formatPersianNumber(progress.xp)} XP</b></div><div className="record-row"><span><Lightbulb size={16} /> راهنمایی استفاده‌شده</span><b>{formatPersianNumber(progress.totalHints)}</b></div><div className="record-row"><span><ShieldCheck size={16} /> خطاهای ثبت‌شده</span><b>{formatPersianNumber(progress.totalMistakes)}</b></div><div className="record-row"><span><RefreshCw size={16} /> دفعات تکمیل</span><b>{formatPersianNumber(progress.gamesPlayed)}</b></div></section></div>
+              <section className="section-card record-card"><div className="section-card-title"><h2>رکوردهای تو</h2><Award size={19} /></div><div className="record-row"><span><Target size={16} /> مجموع تجربه</span><b>{formatPersianNumber(progress.xp)} XP</b></div><div className="record-row"><span><Lightbulb size={16} /> راهنمایی استفاده‌شده</span><b>{formatPersianNumber(progress.totalHints)}</b></div><div className="record-row"><span><RefreshCw size={16} /> دفعات تکمیل</span><b>{formatPersianNumber(progress.gamesPlayed)}</b></div></section></div>
             <div className="section-card recent-card"><div className="section-card-title"><h2>آخرین دستاوردها</h2><span>مرحله‌های تکمیل‌شده</span></div>{Object.entries(progress.completed).length ? <div className="recent-list">{Object.entries(progress.completed).sort((a, b) => Number(b[0]) - Number(a[0])).slice(0, 6).map(([id, result]) => <div className="recent-item" key={id}><span className="recent-level">{formatPersianNumber(Number(id))}</span><div><b>مرحله {formatPersianNumber(Number(id))}</b><small>{formatTime(result.time)} · {formatPersianNumber(result.hints)} راهنمایی</small></div><Stars count={result.stars} /></div>)}</div> : <div className="empty-state"><Orbit size={28} /><b>هنوز دستاوردی ثبت نشده</b><span>اولین مرحله را حل کن تا اینجا روشن شود.</span><button className="text-link" onClick={() => startLevel(1)}>شروع مرحله اول <ArrowLeft size={15} /></button></div>}</div>
           </motion.div>}
 
           {screen === 'settings' && <motion.div key="settings" className="screen" initial={{ opacity: 0, y: 10 }} animate={{ opacity: 1, y: 0 }} exit={{ opacity: 0, y: -8 }}>
             <div className="page-heading"><div><span className="eyebrow muted">شخصی‌سازی تجربه</span><h1>تنظیمات</h1><p>مدار را مطابق سلیقه‌ات تنظیم کن.</p></div><div className="settings-orb"><Settings size={25} /></div></div>
-            <div className="settings-layout"><section className="section-card settings-card"><h2>تجربه بازی</h2><div className="setting-row"><span className="setting-icon"><Volume2 /></span><div><b>افکت‌های صوتی</b><small>بازخورد صوتی برای حرکت‌ها و موفقیت‌ها</small></div><button className={`toggle ${soundOn ? 'on' : ''}`} onClick={() => setSoundOn((v) => !v)}><i /></button></div><div className="setting-row"><span className="setting-icon"><VolumeX /></span><div><b>موسیقی پس‌زمینه</b><small>صدای فضایی ملایم هنگام بازی</small></div><button className={`toggle ${musicOn ? 'on' : ''}`} onClick={() => setMusicOn((v) => !v)}><i /></button></div><div className="setting-row"><span className="setting-icon"><Zap /></span><div><b>بازخورد لرزشی</b><small>لرزش کوتاه روی دستگاه‌های پشتیبانی‌شده</small></div><button className={`toggle ${hapticsOn ? 'on' : ''}`} onClick={() => setHapticsOn((v) => !v)}><i /></button></div><div className="setting-row"><span className="setting-icon"><ShieldCheck /></span><div><b>بررسی خودکار خطا</b><small>نمایش فوری خانه‌هایی که با قوانین سازگار نیستند</small></div><button className={`toggle ${autoCheck ? 'on' : ''}`} onClick={() => setAutoCheck((v) => !v)}><i /></button></div><div className="setting-row"><span className="setting-icon"><BookOpen /></span><div><b>آموزش بازی</b><small>مرور دوباره قوانین و شیوه بازی</small></div><button className="outline-button small" onClick={() => { setTutorialStep(0); setTutorialOpen(true); }}>نمایش آموزش</button></div><div className="setting-row"><span className="setting-icon"><Sparkles /></span><div><b>مقدمه بازی</b><small>تماشای دوباره معرفی دنیای مدار</small></div><button className="outline-button small" onClick={() => setIntroOpen(true)}>نمایش مقدمه</button></div></section>
+            <div className="settings-layout"><section className="section-card settings-card"><h2>تجربه بازی</h2><div className="setting-row"><span className="setting-icon"><Volume2 /></span><div><b>افکت‌های صوتی</b><small>بازخورد صوتی برای حرکت‌ها و موفقیت‌ها</small></div><button className={`toggle ${soundOn ? 'on' : ''}`} onClick={() => setSoundOn((v) => !v)}><i /></button></div><div className="setting-row"><span className="setting-icon"><VolumeX /></span><div><b>موسیقی پس‌زمینه</b><small>صدای فضایی ملایم هنگام بازی</small></div><button className={`toggle ${musicOn ? 'on' : ''}`} onClick={() => setMusicOn((v) => !v)}><i /></button></div><div className="setting-row"><span className="setting-icon"><Zap /></span><div><b>بازخورد لرزشی</b><small>لرزش کوتاه روی دستگاه‌های پشتیبانی‌شده</small></div><button className={`toggle ${hapticsOn ? 'on' : ''}`} onClick={() => setHapticsOn((v) => !v)}><i /></button></div><div className="setting-row"><span className="setting-icon"><BookOpen /></span><div><b>آموزش بازی</b><small>مرور دوباره قوانین و شیوه بازی</small></div><button className="outline-button small" onClick={() => { setTutorialStep(0); setTutorialOpen(true); }}>نمایش آموزش</button></div><div className="setting-row"><span className="setting-icon"><Sparkles /></span><div><b>مقدمه بازی</b><small>تماشای دوباره معرفی دنیای مدار</small></div><button className="outline-button small" onClick={() => setIntroOpen(true)}>نمایش مقدمه</button></div></section>
               <section className="section-card settings-card"><h2>داده‌های بازی</h2><div className="setting-row"><span className="setting-icon"><Download /></span><div><b>پشتیبان پیشرفت</b><small>ذخیره یک نسخه از رکوردها و ستاره‌ها</small></div><button className="outline-button small" onClick={downloadProgress}>خروجی گرفتن</button></div><div className="setting-row danger-row"><span className="setting-icon"><RotateCcw /></span><div><b>شروع از ابتدا</b><small>پاک کردن تمام پیشرفت‌های ذخیره‌شده</small></div><button className="outline-button small danger-button" onClick={resetProgress}>پاک کردن</button></div></section>
               <section className="section-card settings-card admin-entry"><div><span className="eyebrow muted">برای سازنده</span><h2>مدیریت مراحل</h2><p>مرحله‌های تازه را وارد کن، اعتبارسنجی کن و خروجی بگیر.</p></div><button className="primary-button" onClick={() => navTo('admin')}>ورود به پنل مدیریت <ArrowLeft size={16} /></button></section></div>
           </motion.div>}
@@ -486,9 +509,7 @@ function App() {
 
       <AnimatePresence>{tutorialOpen && <motion.div className="overlay" initial={{ opacity: 0 }} animate={{ opacity: 1 }} exit={{ opacity: 0 }}><motion.div className="modal tutorial-modal" initial={{ y: 18, scale: 0.97 }} animate={{ y: 0, scale: 1 }} exit={{ y: 12, opacity: 0 }}><button className="modal-close" onClick={finishTutorial}><X size={18} /></button><div className="modal-eyebrow">آموزش کوتاه · {formatPersianNumber(tutorialStep + 1)} از ۳</div><div className="tutorial-progress"><i style={{ width: `${(tutorialStep + 1) / 3 * 100}%` }} /></div>{tutorialStep === 0 ? <><div className="tutorial-visual mini-sun-moon"><Sun /><Moon /></div><h2>خورشید یا ماه؟</h2><p>روی هر خانه بزن تا نمادش تغییر کند: بار اول خورشید، بار دوم ماه و بار سوم خانه خالی می‌شود.</p><div className="practice-grid">{tutorialBoard.map((row, r) => row.map((value, c) => <button key={`${r}-${c}`} onClick={() => setTutorialBoard((prev) => { const next = cloneBoard(prev); next[r][c] = next[r][c] === -1 ? 0 : next[r][c] === 0 ? 1 : -1; return next; })}>{value === -1 ? '' : <SymbolIcon value={value} size={18} />}</button>))}</div><small className="tutorial-caption">امتحانش کن؛ چند خانه را تغییر بده.</small></> : tutorialStep === 1 ? <><div className="tutorial-visual"><Grid3X3 size={45} /></div><h2>تعادل را حفظ کن</h2><p>در هر ردیف و ستون باید دقیقاً به یک اندازه خورشید و ماه داشته باشی. همچنین سه نماد یکسان نباید کنار هم قرار بگیرند و هیچ دو ردیف یا ستونی نباید الگوی کاملاً یکسان داشته باشند.</p><div className="rule-pills"><span><Sun size={15} /> ۲ خورشید</span><span><Moon size={15} /> ۲ ماه</span><span>≠ سه‌تایی</span></div></> : <><div className="tutorial-visual"><span className="relation-demo">=</span><span className="relation-demo different">×</span></div><h2>نشانه‌ها را بخوان</h2><p>علامت مساوی (=) یعنی دو خانه باید یکسان باشند. علامت ضربدر (×) یعنی باید نمادهای متفاوتی داشته باشند.</p><div className="rule-pills"><span> = یکسان</span><span> × متفاوت</span></div></>}<div className="modal-actions"><button className="text-link" onClick={finishTutorial}>رد کردن آموزش</button><button className="primary-button" onClick={() => tutorialStep < 2 ? setTutorialStep((v) => v + 1) : finishTutorial()}>{tutorialStep < 2 ? 'بعدی' : 'شروع بازی'} <ArrowLeft size={16} /></button></div></motion.div></motion.div>}</AnimatePresence>
 
-      <AnimatePresence>{hintMove && screen === 'game' && <motion.div className="overlay" initial={{ opacity: 0 }} animate={{ opacity: 1 }} exit={{ opacity: 0 }}><motion.div className="modal hint-modal" initial={{ y: 18, scale: 0.97 }} animate={{ y: 0, scale: 1 }} exit={{ y: 12, opacity: 0 }}><button className="modal-close" onClick={() => { setHintMove(null); setHintStage(0); }}><X size={18} /></button><div className="hint-orb"><Lightbulb size={24} /></div><div className="modal-eyebrow">راهنمای هوشمند</div><h2>{hintStage === 0 ? 'یک سرنخ کوچک؟' : hintStage === 1 ? 'به منطق جدول دقت کن' : 'خانهٔ پیشنهادی پیدا شد'}</h2><p>{hintStage === 0 ? 'می‌توانیم قدم‌به‌قدم کمکت کنیم، بدون اینکه جواب کل معما را لو بدهیم.' : hintStage === 1 ? 'خانهٔ مشخص‌شده در ردیف و ستون خودش فقط یک انتخاب سازگار دارد. به تعادل نمادها و نشانه‌های اطرافش توجه کن.' : `ردیف ${formatPersianNumber(hintMove.row + 1)}، ستون ${formatPersianNumber(hintMove.col + 1)}: ${hintMove.reason}`}</p>{hintStage >= 1 && <div className="hint-location"><span>ردیف {formatPersianNumber(hintMove.row + 1)}</span><span>ستون {formatPersianNumber(hintMove.col + 1)}</span>{hintStage === 2 && <span className="hint-answer"><SymbolIcon value={hintMove.value} size={16} /> {hintMove.value === 0 ? 'خورشید' : 'ماه'}</span>}</div>}<div className="modal-actions"><button className="text-link" onClick={() => { setHintMove(null); setHintStage(0); }}>فعلاً نه</button>{hintStage === 0 ? <button className="primary-button" onClick={() => setHintStage(1)}>دیدن سرنخ <ArrowLeft size={16} /></button> : hintStage === 1 ? <button className="primary-button" onClick={() => setHintStage(2)}>نمایش نماد <ArrowLeft size={16} /></button> : <button className="primary-button" onClick={applyHint}>قرار دادن نماد <Check size={16} /></button>}</div></motion.div></motion.div>}</AnimatePresence>
-
-      <AnimatePresence>{showWin && screen === 'game' && <motion.div className="overlay" initial={{ opacity: 0 }} animate={{ opacity: 1 }} exit={{ opacity: 0 }}><motion.div className="modal win-modal" initial={{ y: 22, scale: 0.94 }} animate={{ y: 0, scale: 1 }} exit={{ y: 14, opacity: 0 }}><div className="win-confetti">✦　✧　✦</div><div className="win-emblem"><Sun size={43} /><Moon size={27} /></div><div className="modal-eyebrow">یک مدار دیگر کامل شد</div><h2>آفرین! مدار کامل شد</h2><p>با تمرکز و دقت، این چالش را پشت سر گذاشتی.</p><Stars count={starsFor(elapsed, hintCount, mistakes, currentLevel.gridSize)} /><div className="win-metrics"><div><Clock3 size={16} /><b>{formatTime(elapsed)}</b><small>زمان</small></div><div><Lightbulb size={16} /><b>{formatPersianNumber(hintCount)}</b><small>راهنمایی</small></div><div><Heart size={16} /><b>{formatPersianNumber(mistakes)}</b><small>اشتباه</small></div><div><Zap size={16} /><b>+{formatPersianNumber(50 + starsFor(elapsed, hintCount, mistakes, currentLevel.gridSize) * 20)}</b><small>XP</small></div></div><div className="win-streak"><Flame size={17} fill="#ffad5c" /> استریک {formatPersianNumber(progress.currentStreak)} روزه‌ات ادامه دارد!</div><div className="modal-actions win-actions"><button className="outline-button" onClick={() => navTo('map')}>نقشه مراحل</button><button className="primary-button" onClick={() => activeLevelId < allLevels.length ? startLevel(activeLevelId + 1) : navTo('map')}>{activeLevelId < allLevels.length ? 'مرحله بعد' : 'پایان مسیر'} <ArrowLeft size={16} /></button></div></motion.div></motion.div>}</AnimatePresence>
+      <AnimatePresence>{showWin && screen === 'game' && <motion.div className="overlay" initial={{ opacity: 0 }} animate={{ opacity: 1 }} exit={{ opacity: 0 }}><motion.div className="modal win-modal" initial={{ y: 22, scale: 0.94 }} animate={{ y: 0, scale: 1 }} exit={{ y: 14, opacity: 0 }}><div className="win-confetti">✦　✧　✦</div><div className="win-emblem"><Sun size={43} /><Moon size={27} /></div><div className="modal-eyebrow">یک مدار دیگر کامل شد</div><h2>آفرین! مدار کامل شد</h2><p>با تمرکز و دقت، این چالش را پشت سر گذاشتی.</p><Stars count={starsFor(hintCount)} /><div className="win-metrics"><div><Clock3 size={16} /><b>{formatTime(elapsed)}</b><small>زمان حل</small></div><div><Lightbulb size={16} /><b>{formatPersianNumber(hintCount)}</b><small>راهنمایی</small></div><div><Zap size={16} /><b>+{formatPersianNumber(50 + starsFor(hintCount) * 20)}</b><small>XP</small></div></div><div className="star-criteria">بدون راهنمایی: ۳ ستاره <span>·</span> یک راهنمایی: ۲ ستاره <span>·</span> دو راهنمایی یا بیشتر: ۱ ستاره</div><div className="win-streak"><Flame size={17} fill="#ffad5c" /> استریک {formatPersianNumber(progress.currentStreak)} روزه‌ات ادامه دارد!</div><div className="modal-actions win-actions"><button className="outline-button" onClick={() => navTo('map')}>نقشه مراحل</button><button className="primary-button" onClick={() => activeLevelId < allLevels.length ? startLevel(activeLevelId + 1) : navTo('map')}>{activeLevelId < allLevels.length ? 'مرحله بعد' : 'پایان مسیر'} <ArrowLeft size={16} /></button></div></motion.div></motion.div>}</AnimatePresence>
     </div>
   );
 }

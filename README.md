@@ -2,6 +2,10 @@
 
 A Persian-first, RTL cosmic logic puzzle game inspired by Tango-style binary grid puzzles. The project is built with React, TypeScript, Vite, Framer Motion, and Lucide icons.
 
+## Version
+
+Current source version: **1.0.1**. See `CHANGELOG.md` for the latest fixes.
+
 ## Run locally
 
 ```bash
@@ -27,6 +31,10 @@ npm run preview
 - Persian RTL interface, cosmic dark theme, animated intro, interactive onboarding tutorial.
 - Level map, chapter progression, locked levels, stars, XP, daily streak, streak calendar, hints, undo/redo, timer, statistics, and settings.
 - Sound effects, optional ambient synthesized background tone, and optional haptic feedback on supported devices.
+- No automatic per-cell error checking; players can cycle between sun and moon without premature error feedback.
+- An optional final-answer check appears only after all cells are filled and gives general feedback without revealing incorrect cells.
+- Smart hints appear in an inline card below the puzzle so the board remains visible; the forced cell is highlighted.
+- Transparent star scoring: completion always earns at least one star; no hints earns three stars, one hint earns two, and two or more hints earns one.
 - LocalStorage persistence for player progress, custom levels, settings, and an in-progress puzzle (resume after refresh).
 - JSON import/export level management panel. New levels are assigned sequential IDs starting at 101.
 - PWA manifest, app icon, and a small service worker for app-shell caching.
